@@ -34,3 +34,6 @@
  * stored, reported as applied and then ignored at boot. */
 #define CFG_LIMIT_HOP_COUNT_MIN     1u
 #define CFG_LIMIT_HOP_COUNT_MAX     6u
+
+#define CFG_LIMIT_PEER_PROBE_HZ_MIN  1u
+#define CFG_LIMIT_PEER_PROBE_HZ_MAX  50u

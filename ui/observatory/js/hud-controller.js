@@ -417,20 +417,22 @@ export class HudController {
     this._setBarColor('br-bar', vitalColor('br', this._lerpBr));
     this._setBarColor('conf-bar', vitalColor('conf', this._lerpConf));
 
-    this._setText('rssi-value', `${Math.round(feat.mean_rssi || 0)} dBm`);
-    this._setText('var-value', (feat.variance || 0).toFixed(2));
-    this._setText('motion-value', (feat.motion_band_power || 0).toFixed(3));
+    this._setText('rssi-value', Number.isFinite(feat.mean_rssi) ? `${Math.round(feat.mean_rssi)} dBm` : '-- dBm');
+    this._setText('var-value', Number.isFinite(feat.variance) ? feat.variance.toFixed(2) : '--');
+    this._setText('motion-value', Number.isFinite(feat.motion_band_power) ? feat.motion_band_power.toFixed(3) : '--');
 
     // Mini person-count dots
     const personCount = data.estimated_persons || 0;
     this._updatePersonDots(personCount);
+    this._setText('persons-value', Number.isFinite(data.estimated_persons) ? data.estimated_persons : '--');
 
     const presEl = document.getElementById('presence-indicator');
     const presLabel = document.getElementById('presence-label');
     if (presEl) {
       const ml = cls.motion_level || 'absent';
       presEl.className = 'presence-state';
-      if (ml === 'active') { presEl.classList.add('presence--active'); presLabel.textContent = 'ACTIVE'; }
+      if (cls.presence == null) { presLabel.textContent = 'UNKNOWN'; }
+      else if (ml === 'active') { presEl.classList.add('presence--active'); presLabel.textContent = 'ACTIVE'; }
       else if (cls.presence) { presEl.classList.add('presence--present'); presLabel.textContent = 'PRESENT'; }
       else { presEl.classList.add('presence--absent'); presLabel.textContent = 'ABSENT'; }
     }

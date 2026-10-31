@@ -278,7 +278,9 @@ export class FigurePool {
       const fig = this._figures[f];
       if (f < persons.length && isPresent) {
         const p = persons[f];
-        const kps = this._poseSystem.generateKeypoints(p, elapsed, breathPulse);
+        const kps = data.source === 'demo'
+          ? this._poseSystem.generateKeypoints(p, elapsed, breathPulse)
+          : p.keypoints.map(point => [point.x, point.y, point.z]);
         this.applyKeypoints(fig, kps, breathPulse, p.position || [0, 0, 0], elapsed, p.pose);
         fig.visible = true;
       } else {

@@ -8,6 +8,7 @@
 
 #include "config_rules.h"
 
+#include <ctype.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -28,6 +29,11 @@ const cfg_key_t CONFIG_KEYS[] = {
     { "tdm_slot_index",     "tdm_slot",     T_U8,    0,    63,     0,   0,   false },
     { "tdm_node_count",     "tdm_nodes",    T_U8,    1,    64,     0,   0,   false },
     { "beacon_period_ms",   "beacon_ms",    T_U16,   0, 10000,     0,   0,   false },
+    { "radio_mode",         "radio_mode",   T_U8,    0,     1,     0,   0,   false },
+    { "peer_mac",           "peer_mac",     T_STR,   0,     0,    18,   0,   false },
+    { "peer_probe_hz",      "peer_hz",      T_U8,    CFG_LIMIT_PEER_PROBE_HZ_MIN,
+                                                        CFG_LIMIT_PEER_PROBE_HZ_MAX,
+                                                        0,   0,   false },
     { "edge_tier",          "edge_tier",    T_U8,    0,     2,     0,   0,   false },
     { "presence_thresh",    "pres_thresh",  T_U16,   0, 65535,     0, 1000,  false },
     { "fall_thresh",        "fall_thresh",  T_U16,   0, 65535,     0, 1000,  false },
@@ -57,6 +63,27 @@ const cfg_key_t *config_find_key(const char *json)
     return NULL;
 }
 
+bool config_parse_peer_mac(const char *text, uint8_t mac[6])
+{
+    if (text == NULL || mac == NULL || strlen(text) != 17) return false;
+    for (size_t index = 0; index < 17; index++) {
+        if (index % 3 == 2) {
+            if (text[index] != ':') return false;
+        } else if (!isxdigit((unsigned char)text[index])) {
+            return false;
+        }
+    }
+    unsigned octets[6];
+    if (sscanf(text, "%2x:%2x:%2x:%2x:%2x:%2x", &octets[0], &octets[1],
+               &octets[2], &octets[3], &octets[4], &octets[5]) != 6) return false;
+    unsigned combined = 0;
+    for (size_t index = 0; index < 6; index++) {
+        mac[index] = (uint8_t)octets[index];
+        combined |= octets[index];
+    }
+    return combined != 0 && (mac[0] & 1u) == 0;
+}
+
 bool config_validate_value(const cfg_key_t *k, const cfg_value_t *v,
                             uint32_t *scaled, char *err, size_t errlen)
 {
@@ -69,6 +96,13 @@ bool config_validate_value(const cfg_key_t *k, const cfg_value_t *v,
             snprintf(err, errlen, "%s exceeds %u chars", k->json,
                      (unsigned)(k->maxlen - 1));
             return false;
+        }
+        if (strcmp(k->json, "peer_mac") == 0 && v->str[0] != '\0') {
+            uint8_t mac[6];
+            if (!config_parse_peer_mac(v->str, mac)) {
+                snprintf(err, errlen, "peer_mac must be a nonzero unicast MAC address");
+                return false;
+            }
         }
         return true;
     }

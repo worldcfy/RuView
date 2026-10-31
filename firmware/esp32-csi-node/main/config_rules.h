@@ -59,6 +59,8 @@ extern const size_t   CONFIG_KEY_COUNT;
 /** The key for a JSON field name, or NULL when the name is not writable. */
 const cfg_key_t *config_find_key(const char *json);
 
+bool config_parse_peer_mac(const char *text, uint8_t mac[6]);
+
 /**
  * Accept or reject one value.
  *

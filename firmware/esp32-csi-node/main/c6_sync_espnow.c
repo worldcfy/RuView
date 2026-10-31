@@ -16,6 +16,7 @@
 
 #include "sdkconfig.h"
 #include "c6_sync_espnow.h"
+#include "nvs_config.h"
 #include "esp_log.h"
 #include "esp_now.h"
 #include "esp_wifi.h"
@@ -42,6 +43,10 @@ typedef struct __attribute__((packed)) {
 } espnow_beacon_t;
 
 static const uint8_t s_broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+static uint8_t s_destination_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+static bool s_directed_peer = false;
+static uint32_t s_probe_period_ms = BEACON_PERIOD_MS;
+static bool s_peer_configuration_valid = true;
 
 static uint64_t s_local_id     = 0;   /* 6-byte MAC packed into u64 */
 static uint64_t s_leader_id    = 0;
@@ -86,7 +91,7 @@ static void send_beacon(void)
         ._reserved       = 0,
         .leader_epoch_us = (uint64_t)esp_timer_get_time(),
     };
-    esp_err_t r = esp_now_send(s_broadcast_mac, (uint8_t *)&b, sizeof(b));
+    esp_err_t r = esp_now_send(s_destination_mac, (uint8_t *)&b, sizeof(b));
     s_tx_count++;
     if (r != ESP_OK) s_tx_fail++;
     /* Diag log every 50 beacons. */
@@ -111,6 +116,8 @@ static void on_recv(const uint8_t *src_mac, const uint8_t *data, int len)
 {
 #endif
     s_rx_count++;
+    if (s_directed_peer && (src_mac == NULL
+        || memcmp(src_mac, s_destination_mac, 6) != 0)) return;
     if (data == NULL || len < (int)sizeof(espnow_beacon_t)) return;
     const espnow_beacon_t *b = (const espnow_beacon_t *)data;
     if (b->magic != BEACON_MAGIC || b->proto_ver != BEACON_PROTO_VER) return;
@@ -188,29 +195,71 @@ static void beacon_timer_cb(TimerHandle_t t)
     send_beacon();
 }
 
+esp_err_t c6_sync_espnow_configure_peer(uint8_t mode, const uint8_t *peer_mac, uint8_t probe_hz)
+{
+    if (s_beacon_timer != NULL) return ESP_ERR_INVALID_STATE;
+    s_peer_configuration_valid = false;
+    if (mode == RADIO_MODE_AP) {
+        s_directed_peer = false;
+        memcpy(s_destination_mac, s_broadcast_mac, 6);
+        s_probe_period_ms = BEACON_PERIOD_MS;
+    } else if (mode == RADIO_MODE_AP_PEER && peer_mac != NULL
+        && (peer_mac[0] & 1u) == 0 && mac6_to_u64(peer_mac) != 0
+        && probe_hz >= CFG_LIMIT_PEER_PROBE_HZ_MIN && probe_hz <= CFG_LIMIT_PEER_PROBE_HZ_MAX) {
+        s_directed_peer = true;
+        memcpy(s_destination_mac, peer_mac, 6);
+        s_probe_period_ms = 1000u / probe_hz;
+    } else {
+        return ESP_ERR_INVALID_ARG;
+    }
+    s_peer_configuration_valid = true;
+    return ESP_OK;
+}
+
 esp_err_t c6_sync_espnow_init(void)
 {
     uint8_t mac[6];
-    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    esp_err_t mac_result = esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    if (mac_result != ESP_OK) return mac_result;
     s_local_id = mac6_to_u64(mac);
-
+    if (!s_peer_configuration_valid
+        || (s_directed_peer && memcmp(mac, s_destination_mac, 6) == 0)) {
+        ESP_LOGE(TAG, "Directed sensing needs a distinct unicast peer and a 1..50 Hz probe rate");
+        return ESP_ERR_INVALID_ARG;
+    }
     esp_err_t r = esp_now_init();
     if (r != ESP_OK) {
         ESP_LOGE(TAG, "esp_now_init failed: %s", esp_err_to_name(r));
         return r;
     }
-    esp_now_register_recv_cb(on_recv);
-    esp_now_register_send_cb(on_send);
+    r = esp_now_register_recv_cb(on_recv);
+    if (r != ESP_OK) return r;
+    r = esp_now_register_send_cb(on_send);
+    if (r != ESP_OK) return r;
 
     /* Add broadcast peer so esp_now_send to FF:FF:FF:FF:FF:FF works. */
     esp_now_peer_info_t peer = {0};
-    memcpy(peer.peer_addr, s_broadcast_mac, 6);
+    memcpy(peer.peer_addr, s_destination_mac, 6);
     peer.channel = 0;        /* current STA channel */
     peer.ifidx   = WIFI_IF_STA;
     peer.encrypt = false;
     r = esp_now_add_peer(&peer);
     if (r != ESP_OK && r != ESP_ERR_ESPNOW_EXIST) {
-        ESP_LOGW(TAG, "esp_now_add_peer(broadcast) failed: %s", esp_err_to_name(r));
+        ESP_LOGE(TAG, "esp_now_add_peer failed: %s", esp_err_to_name(r));
+        return r;
+    }
+    if (s_directed_peer) {
+        esp_now_rate_config_t rate_config = {
+            .phymode = WIFI_PHY_MODE_HT20,
+            .rate = WIFI_PHY_RATE_MCS0_LGI,
+            .ersu = false,
+            .dcm = false,
+        };
+        r = esp_now_set_peer_rate_config(s_destination_mac, &rate_config);
+        if (r != ESP_OK) {
+            ESP_LOGE(TAG, "Peer CSI probe rate configuration failed: %s", esp_err_to_name(r));
+            return r;
+        }
     }
 
     /* Start as candidate leader — will step down on receiving lower-id beacon. */
@@ -219,16 +268,17 @@ esp_err_t c6_sync_espnow_init(void)
     s_last_seen_us = (uint64_t)esp_timer_get_time();
 
     s_beacon_timer = xTimerCreate("c6_espnow_beacon",
-                                  pdMS_TO_TICKS(BEACON_PERIOD_MS),
+                                  pdMS_TO_TICKS(s_probe_period_ms),
                                   pdTRUE, NULL, beacon_timer_cb);
     if (s_beacon_timer == NULL) {
         ESP_LOGE(TAG, "xTimerCreate failed");
         return ESP_ERR_NO_MEM;
     }
-    xTimerStart(s_beacon_timer, 0);
+    if (xTimerStart(s_beacon_timer, 0) != pdPASS) return ESP_FAIL;
 
-    ESP_LOGI(TAG, "init done: local_id=%012llx leader=yes(candidate) period=%ums",
-             (unsigned long long)s_local_id, (unsigned)BEACON_PERIOD_MS);
+    ESP_LOGI(TAG, "init done: local_id=%012llx directed_peer=%d period=%lums",
+             (unsigned long long)s_local_id, (int)s_directed_peer,
+             (unsigned long)s_probe_period_ms);
     return ESP_OK;
 }
 

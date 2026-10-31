@@ -69,7 +69,7 @@
       <div class="vital-row">
         <div class="vital-icon">&#9878;</div>
         <div class="vital-data">
-          <div class="vital-label">Confidence</div>
+          <div class="vital-label">Presence Confidence</div>
           <div class="vital-value"><span id="conf-value">--</span><span class="vital-unit">%</span></div>
           <div class="vital-bar"><div id="conf-bar" class="vital-bar-fill vital-bar--conf"></div></div>
         </div>
@@ -110,11 +110,20 @@
 
     <!-- Bottom bar: capabilities -->
     <div id="capabilities-bar">
-      <div class="cap-item"><span class="cap-icon">&#9898;</span><span>Human Pose Estimation</span></div>
-      <div class="cap-divider"></div>
-      <div class="cap-item"><span class="cap-icon">&#9829;</span><span>Vital Sign Monitoring</span></div>
-      <div class="cap-divider"></div>
-      <div class="cap-item"><span class="cap-icon">&#9784;</span><span>Presence Detection</span></div>
+      <div class="diagnostics-summary">
+        <strong id="diagnostics-title">Waiting for live sensors</strong>
+        <span id="diagnostics-calibration">Calibration: unavailable</span>
+        <span id="diagnostics-fusion">Fusion: unavailable</span>
+        <span id="diagnostics-pose">Pose: unavailable</span>
+      </div>
+      <table class="diagnostics-table">
+        <thead><tr><th>Node / state</th><th>RSSI</th><th>CSI Hz</th><th>Configured position (m)</th></tr></thead>
+        <tbody id="diagnostics-nodes"></tbody>
+      </table>
+      <div class="diagnostics-readouts">
+        <span id="diagnostics-vitals">No qualified vital estimate</span>
+        <span id="diagnostics-events">Gesture/events: unavailable</span>
+      </div>
     </div>
 
     <!-- Bottom-right: keyboard hints -->

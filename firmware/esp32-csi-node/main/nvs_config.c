@@ -7,6 +7,7 @@
  */
 
 #include "nvs_config.h"
+#include "config_rules.h"
 
 #include <string.h>
 #include "csi_collector.h"
@@ -33,6 +34,10 @@ void nvs_config_load(nvs_config_t *cfg)
 
     cfg->led_mode = LED_MODE_FLICKER;
     cfg->led_brightness = 100;
+    cfg->radio_mode = RADIO_MODE_AP;
+    cfg->peer_probe_hz = 10;
+    cfg->peer_mac_set = 0;
+    memset(cfg->peer_mac, 0, sizeof(cfg->peer_mac));
 
     /* Start with Kconfig compiled defaults */
     strlcpy(cfg->wifi_ssid, CONFIG_CSI_WIFI_SSID, sizeof(cfg->wifi_ssid));
@@ -149,6 +154,22 @@ void nvs_config_load(nvs_config_t *cfg)
     if (nvs_get_u8(handle, "node_id", &node_val) == ESP_OK) {
         cfg->node_id = node_val;
         ESP_LOGI(TAG, "NVS override: node_id=%u", cfg->node_id);
+    }
+
+    uint8_t radio_mode;
+    if (nvs_get_u8(handle, "radio_mode", &radio_mode) == ESP_OK
+        && radio_mode <= RADIO_MODE_AP_PEER) {
+        cfg->radio_mode = radio_mode;
+    }
+    uint8_t probe_hz;
+    if (nvs_get_u8(handle, "peer_hz", &probe_hz) == ESP_OK
+        && probe_hz >= CFG_LIMIT_PEER_PROBE_HZ_MIN && probe_hz <= CFG_LIMIT_PEER_PROBE_HZ_MAX) {
+        cfg->peer_probe_hz = probe_hz;
+    }
+    len = sizeof(buf);
+    if (nvs_get_str(handle, "peer_mac", buf, &len) == ESP_OK
+        && config_parse_peer_mac(buf, cfg->peer_mac)) {
+        cfg->peer_mac_set = 1;
     }
 
     /* ADR-029: Channel hop count */
@@ -348,5 +369,11 @@ void nvs_config_load(nvs_config_t *cfg)
         cfg->tdm_slot_index = 0;
     }
 
+    if (cfg->radio_mode == RADIO_MODE_AP_PEER && cfg->peer_mac_set) {
+        memcpy(cfg->filter_mac, cfg->peer_mac, sizeof(cfg->filter_mac));
+        cfg->filter_mac_set = 1;
+        cfg->channel_hop_count = 1;
+        cfg->csi_channel = 0;
+    }
     nvs_close(handle);
 }

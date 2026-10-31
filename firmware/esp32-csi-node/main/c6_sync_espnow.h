@@ -37,6 +37,9 @@ extern "C" {
  */
 esp_err_t c6_sync_espnow_init(void);
 
+/** Capture validated peer settings before WiFi initialization. */
+esp_err_t c6_sync_espnow_configure_peer(uint8_t mode, const uint8_t *peer_mac, uint8_t probe_hz);
+
 /**
  * Returns the synced wall-clock estimate in microseconds.
  * If no leader heard within the timeout, returns the local

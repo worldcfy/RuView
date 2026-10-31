@@ -696,3 +696,46 @@ body {
   #key-hints { display: none; }
   .settings-dialog { width: 95vw; }
 }
+
+#capabilities-bar {
+  display: block;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  transform: none;
+  border-radius: 0;
+  border-width: 1px 0 0;
+  padding: 12px 28px;
+  max-height: 28vh;
+  overflow: auto;
+  pointer-events: auto;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0;
+}
+.diagnostics-summary, .diagnostics-readouts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 20px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.diagnostics-summary strong { color: var(--green-bright); }
+.diagnostics-table { width: 100%; border-collapse: collapse; margin: 8px 0; table-layout: fixed; }
+.diagnostics-table th, .diagnostics-table td {
+  text-align: left;
+  padding: 4px 8px 4px 0;
+  overflow-wrap: anywhere;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.diagnostics-table th { color: var(--text-label); font-weight: 400; }
+#key-hints { bottom: 170px; }
+@media (max-width: 800px) {
+  #brand { top: 12px; left: 14px; }
+  #brand-logo { font-size: 24px; letter-spacing: 0; }
+  #brand-tagline { display: none; }
+  #status-bar { top: 14px; right: 14px; gap: 6px; }
+  #capabilities-bar { padding: 10px 14px; max-height: 38vh; font-size: 10px; }
+  .diagnostics-table th:last-child, .diagnostics-table td:last-child { width: 38%; }
+  .diagnostics-readouts { display: grid; gap: 5px; }
+}

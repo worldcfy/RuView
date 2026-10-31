@@ -9,6 +9,7 @@
  * - Reflective floor, settings dialog, and practical data HUD
  */
 import { withWsTicket } from '../../services/ws-ticket.js';
+import { apiService } from '../../services/api.service.js';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
@@ -104,6 +105,12 @@ class Observatory {
     this._nebula = new NebulaBackground(this._scene);
     this._buildRoom();
     this._buildRouter();
+    this._sensorVisuals = new Map();
+    this._sensorGroup = new THREE.Group();
+    this._scene.add(this._sensorGroup);
+    this._sensorBaseline = new THREE.Line(new THREE.BufferGeometry(),
+      new THREE.LineBasicMaterial({ color: C.blueSignal, transparent: true, opacity: 0.6 }));
+    this._scene.add(this._sensorBaseline);
     this._poseSystem = new PoseSystem();
     this._figurePool = new FigurePool(this._scene, this.settings, this._poseSystem);
     this._scenarioProps = new ScenarioProps(this._scene);
@@ -131,12 +138,27 @@ class Observatory {
     // WebSocket for live data — always try auto-detect on startup
     this._ws = null;
     this._liveData = null;
+    this._liveVitals = null;
+    this._liveEvents = null;
+    this._lastLiveFrameAt = 0;
+    this._telemetry = {};
+    this._telemetryUpdatedAt = 0;
+    this._telemetryPollPending = false;
+    this._diagnosticsRenderedAt = 0;
+    this._connectionGeneration = 0;
+    this._liveRetryTimer = null;
+    this._connectionTimer = null;
     this._autoDetectLive();
 
     // Input
     this._initKeyboard();
     this._hud.initSettings();
     this._hud.initQuickSelect();
+    this._telemetryTimer = setInterval(() => { void this._pollLiveTelemetry(); }, 2000);
+    window.addEventListener('pagehide', () => {
+      clearInterval(this._telemetryTimer);
+      this._disconnectWS();
+    });
     window.addEventListener('resize', () => this._onResize());
 
     // Start
@@ -437,6 +459,8 @@ class Observatory {
   // ---- WebSocket live data ----
 
   _autoDetectLive() {
+    this._disconnectWS();
+    const generation = this._connectionGeneration;
     // Probe sensing server health on same origin, then common ports
     const host = window.location.hostname || 'localhost';
     const candidates = [
@@ -448,14 +472,17 @@ class Observatory {
     const unique = [...new Set(candidates)];
 
     const tryNext = (i) => {
+      if (generation !== this._connectionGeneration) return;
       if (i >= unique.length) {
-        console.log('[Observatory] No sensing server detected, using demo mode');
+        console.log('[Observatory] No sensing server detected, retrying in demo mode');
+        this._scheduleLiveRetry();
         return;
       }
       const base = unique[i];
-      fetch(`${base}/health`, { signal: AbortSignal.timeout(1500) })
+      fetch(`${base}/health`, { signal: AbortSignal.timeout(15000) })
         .then(r => r.ok ? r.json() : Promise.reject())
         .then(data => {
+          if (generation !== this._connectionGeneration) return;
           if (data && data.status === 'ok') {
             const wsProto = base.startsWith('https') ? 'wss:' : 'ws:';
             const urlObj = new URL(base);
@@ -476,28 +503,236 @@ class Observatory {
   // async: `/ws/sensing` is gated (ADR-272); mint a single-use ticket first.
   async _connectWS(url) {
     this._disconnectWS();
+    const generation = this._connectionGeneration;
+    this.settings.wsUrl = url;
     let wsUrl = url;
     try { wsUrl = await withWsTicket(url); } catch { /* auth off or pre-ADR-272 server */ }
+    if (generation !== this._connectionGeneration) return;
     try {
-      this._ws = new WebSocket(wsUrl);
-      this._ws.onopen = () => {
+      const socket = new WebSocket(wsUrl);
+      this._ws = socket;
+      socket.onopen = () => {
+        if (this._ws !== socket) return;
+        clearTimeout(this._connectionTimer);
+        this._connectionTimer = null;
+        this.settings.dataSource = 'ws';
         console.log('[Observatory] WebSocket connected');
-        this._hud.updateSourceBadge('ws', this._ws);
+        this._hud.updateSourceBadge('ws', socket);
       };
-      this._ws.onmessage = (evt) => { try { this._liveData = JSON.parse(evt.data); } catch {} };
-      this._ws.onclose = () => {
-        console.log('[Observatory] WebSocket closed, falling back to demo');
+      socket.onmessage = (evt) => {
+        if (this._ws !== socket) return;
+        try { this._consumeLiveMessage(JSON.parse(evt.data)); } catch {}
+      };
+      socket.onclose = () => {
+        if (this._ws !== socket) return;
+        clearTimeout(this._connectionTimer);
+        this._connectionTimer = null;
+        console.log('[Observatory] WebSocket closed, retrying in demo mode');
         this._ws = null;
+        this._liveData = null;
+        this._liveVitals = null;
+        this._liveEvents = null;
         this.settings.dataSource = 'demo';
         this._hud.updateSourceBadge('demo', null);
+        this._scheduleLiveRetry(url);
       };
-      this._ws.onerror = () => {};
-    } catch {}
+      socket.onerror = () => {};
+      this._connectionTimer = setTimeout(() => {
+        if (this._ws === socket) socket.close();
+      }, 15000);
+    } catch {
+      this._scheduleLiveRetry(url);
+    }
+  }
+
+  _scheduleLiveRetry(url) {
+    if (this._liveRetryTimer !== null) return;
+    const generation = this._connectionGeneration;
+    this._liveRetryTimer = setTimeout(() => {
+      this._liveRetryTimer = null;
+      if (generation !== this._connectionGeneration) return;
+      if (url) void this._connectWS(url);
+      else this._autoDetectLive();
+    }, 3000);
+  }
+
+  _consumeLiveMessage(message) {
+    if (!message || typeof message !== 'object') return;
+    if (message.type === 'sensing_update') {
+      this._lastLiveFrameAt = Date.now();
+      this._liveData = { ...message };
+      const cached = this._liveVitals;
+      if (!message.vital_signs && cached && Date.now() - cached.receivedAt < 3000
+          && message.estimated_persons === 1
+          && message.nodes?.some(node => node.node_id === cached.nodeId)) {
+        this._liveData.vital_signs = cached.values;
+      }
+    } else if (message.type === 'edge_vitals') {
+      const authorized = message.numeric_vitals_authorized === true
+        && this._liveData?.estimated_persons === 1
+        && this._liveData?.nodes?.some(node => node.node_id === message.node_id);
+      this._liveVitals = authorized ? {
+        receivedAt: Date.now(), nodeId: message.node_id,
+        values: {
+          heart_rate_bpm: message.heart_rate_bpm,
+          breathing_rate_bpm: message.breathing_rate_bpm,
+        },
+      } : null;
+      if (this._liveData) {
+        this._liveData.vital_signs = this._liveVitals?.values;
+      }
+    } else if (message.type === 'wasm_event' || message.type === 'wasm_output') {
+      this._liveEvents = { ...message, receivedAt: Date.now() };
+    }
+  }
+
+  _getLiveDiagnostics() {
+    const telemetry = this._telemetry || {};
+    const frame = this._liveData || {};
+    const live = this.settings.dataSource === 'ws';
+    const frameFresh = Date.now() - (this._lastLiveFrameAt ?? Date.now()) < 3000;
+    const telemetryFresh = Date.now() - (this._telemetryUpdatedAt ?? Date.now()) < 5000;
+    const positions = telemetry.status?.trust?.node_positions || {};
+    const nodes = (telemetry.nodes?.nodes || []).map(node => ({
+      id: node.node_id,
+      status: telemetryFresh ? node.csi_status || node.status : 'stale',
+      rssi: node.rssi_dbm,
+      fps: telemetry.mesh?.nodes?.[node.node_id]?.csi_fps_ema || 0,
+      configured: node.position_configured === true,
+      position: positions[node.node_id] || frame.nodes?.find(item => item.node_id === node.node_id)?.position,
+    })).sort((left, right) => left.id - right.id);
+    const qualifiedPersons = live && frameFresh ? (frame.persons || []).filter(person =>
+      person.keypoints?.length === 17 && person.keypoints.every(point => point.confidence >= 0.5
+        && [point.x, point.y, point.z].every(Number.isFinite))) : [];
+    const vitalResponse = telemetry.vitals;
+    let vitalSigns = live && frameFresh ? frame.vital_signs : null;
+    if (vitalResponse?.authority === 'abstained' || !telemetryFresh) vitalSigns = null;
+    else if (live && telemetryFresh && vitalResponse?.vital_signs) vitalSigns = vitalResponse.vital_signs;
+    if (vitalSigns && ![vitalSigns.heart_rate_bpm, vitalSigns.breathing_rate_bpm]
+      .some(value => Number.isFinite(value) && value > 0)) vitalSigns = null;
+    const currentEvents = this._liveEvents && Date.now() - this._liveEvents.receivedAt < 3000
+      ? this._liveEvents : null;
+    return {
+      live, frameFresh, nodes, qualifiedPersons, vitalSigns,
+      vitalReason: vitalResponse?.abstention_reason || (vitalSigns ? 'Published experimental estimate' : 'No qualified vital estimate'),
+      calibration: telemetry.calibration?.status || 'unavailable',
+      phaseFusion: telemetry.status?.trust?.phase_fusion?.mode || 'unavailable',
+      events: currentEvents?.events || [],
+      eventNode: currentEvents?.node_id,
+      eventModule: currentEvents?.module_id,
+    };
+  }
+
+  _getRenderData(dt) {
+    if (this.settings.dataSource !== 'ws') return this._demoData.update(dt);
+    const diagnostics = this._getLiveDiagnostics();
+    const frame = diagnostics.frameFresh ? this._liveData || {} : {};
+    return {
+      ...frame,
+      source: frame.source || 'esp32',
+      nodes: frame.nodes || [],
+      features: frame.features || {},
+      classification: frame.classification || {},
+      persons: diagnostics.qualifiedPersons,
+      vital_signs: diagnostics.frameFresh ? diagnostics.vitalSigns || undefined : undefined,
+    };
   }
 
   _disconnectWS() {
-    if (this._ws) { this._ws.close(); this._ws = null; }
+    this._connectionGeneration++;
+    clearTimeout(this._liveRetryTimer);
+    clearTimeout(this._connectionTimer);
+    this._liveRetryTimer = null;
+    this._connectionTimer = null;
+    if (this._ws) {
+      const socket = this._ws;
+      this._ws = null;
+      socket.onopen = socket.onmessage = socket.onclose = socket.onerror = null;
+      socket.close();
+    }
     this._liveData = null;
+    this._liveVitals = null;
+    this._liveEvents = null;
+  }
+
+  async _pollLiveTelemetry() {
+    if (this.settings.dataSource !== 'ws' || this._telemetryPollPending) return;
+    this._telemetryPollPending = true;
+    const endpoints = {
+      nodes: '/api/v1/nodes', mesh: '/api/v1/mesh', status: '/api/v1/status',
+      calibration: '/api/v1/calibration/status', vitals: '/api/v1/vital-signs',
+    };
+    try {
+      const results = await Promise.all(Object.entries(endpoints).map(async ([key, path]) => {
+        try {
+          const response = await fetch(path, { headers: apiService.getHeaders(), signal: AbortSignal.timeout(5000) });
+          return [key, response.ok ? await response.json() : null];
+        } catch { return [key, null]; }
+      }));
+      this._telemetry = Object.fromEntries(results);
+      this._telemetryUpdatedAt = Date.now();
+    } finally { this._telemetryPollPending = false; }
+  }
+
+  _renderLiveDiagnostics(diagnostics) {
+    if (Date.now() - this._diagnosticsRenderedAt < 500) return;
+    this._diagnosticsRenderedAt = Date.now();
+    const title = document.getElementById('diagnostics-title');
+    if (!title) return;
+    title.textContent = diagnostics.live ? 'Live sensor diagnostics' : 'Demo data';
+    document.getElementById('diagnostics-calibration').textContent = `Calibration: ${diagnostics.calibration}`;
+    document.getElementById('diagnostics-fusion').textContent = `Fusion: ${diagnostics.phaseFusion}`;
+    document.getElementById('diagnostics-pose').textContent = diagnostics.qualifiedPersons.length
+      ? 'Pose: supplied estimate' : 'Pose: no qualified keypoints';
+    document.getElementById('diagnostics-vitals').textContent = diagnostics.vitalReason;
+    const events = diagnostics.events.map(event => `${event.event_type}: ${Number.isFinite(event.value) ? event.value.toFixed(2) : '--'}`);
+    document.getElementById('diagnostics-events').textContent = events.length
+      ? `Node ${diagnostics.eventNode}, module ${diagnostics.eventModule}: ${events.join(', ')}`
+      : 'Gesture/events: no recent programmed output';
+    const rows = diagnostics.nodes.map(node => {
+      const row = document.createElement('tr');
+      row.dataset.nodeId = String(node.id);
+      const position = node.configured && node.position
+        ? node.position.map(value => Number(value).toFixed(1)).join(', ') : 'not configured';
+      for (const value of [`${node.id} / ${node.status}`, Number.isFinite(node.rssi) ? `${node.rssi} dBm` : '--',
+        node.fps > 0 ? node.fps.toFixed(1) : '--', position]) {
+        const cell = document.createElement('td');
+        cell.textContent = value;
+        row.append(cell);
+      }
+      return row;
+    });
+    document.getElementById('diagnostics-nodes').replaceChildren(...rows);
+    document.getElementById('scenario-area').style.display = diagnostics.live ? 'none' : 'flex';
+  }
+
+  _updateSensorLinks(diagnostics) {
+    const currentIds = new Set();
+    const positions = [];
+    for (const node of diagnostics.nodes) {
+      if (!node.configured || !node.position?.every(Number.isFinite)) continue;
+      currentIds.add(node.id);
+      let visual = this._sensorVisuals.get(node.id);
+      if (!visual) {
+        visual = new THREE.Mesh(new THREE.SphereGeometry(0.12, 12, 12),
+          new THREE.MeshBasicMaterial({ color: C.greenGlow }));
+        visual.name = `Configured node ${node.id}`;
+        this._sensorVisuals.set(node.id, visual);
+        this._sensorGroup.add(visual);
+      }
+      visual.position.set(node.position[0], node.position[2], node.position[1]);
+      visual.material.color.setHex(node.status === 'active' ? C.greenGlow : C.amber);
+      positions.push(visual.position.clone());
+    }
+    for (const [nodeId, visual] of this._sensorVisuals) {
+      if (currentIds.has(nodeId)) continue;
+      this._sensorGroup.remove(visual);
+      visual.geometry.dispose(); visual.material.dispose();
+      this._sensorVisuals.delete(nodeId);
+    }
+    this._sensorGroup.visible = diagnostics.live;
+    this._sensorBaseline.visible = diagnostics.live && positions.length === 2;
+    if (positions.length === 2) this._sensorBaseline.geometry.setFromPoints(positions);
   }
 
   // ========================================
@@ -510,17 +745,16 @@ class Observatory {
     const elapsed = this._clock.getElapsedTime();
 
     // Data source
-    if (this.settings.dataSource === 'ws' && this._liveData) {
-      this._currentData = this._liveData;
-    } else {
-      this._currentData = this._demoData.update(dt);
-    }
+    this._currentData = this._getRenderData(dt);
+    const diagnostics = this._getLiveDiagnostics();
     const data = this._currentData;
 
     // Updates
+    this._renderLiveDiagnostics(diagnostics);
+    this._updateSensorLinks(diagnostics);
     this._nebula.update(dt, elapsed);
     this._figurePool.update(data, elapsed);
-    this._scenarioProps.update(data, this._demoData.currentScenario);
+    this._scenarioProps.update(data, diagnostics.live ? 'empty_room' : this._demoData.currentScenario);
     this._updateDotMatrixMist(data, elapsed);
     this._updateParticleTrail(data, dt, elapsed);
     this._updateWifiWaves(elapsed);

@@ -133,6 +133,31 @@ static void test_table_matches_shared_limits(void)
  */
 static void test_range_boundaries(void)
 {
+    accept_num("radio_mode", 0, NULL);
+    accept_num("radio_mode", 1, NULL);
+    reject_num("radio_mode", 2);
+    accept_num("peer_probe_hz", 1, NULL);
+    accept_num("peer_probe_hz", 50, NULL);
+    reject_num("peer_probe_hz", 0);
+    reject_num("peer_probe_hz", 51);
+
+    const cfg_key_t *peer = config_find_key("peer_mac");
+    CHECK(peer != NULL, "peer_mac must be configurable");
+    if (peer != NULL) {
+        char error[96] = {0};
+        uint32_t scaled = 0;
+        cfg_value_t value = { .kind = CFG_VAL_STR, .str = "94:a9:90:d3:10:ac" };
+        CHECK(config_validate_value(peer, &value, &scaled, error, sizeof(error)),
+              "a unicast peer MAC must be accepted");
+        const char *invalid[] = { "00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff",
+                                  "01:00:5e:00:00:01", "not-a-mac", "94:a9:90:d3:10:zz" };
+        for (size_t index = 0; index < sizeof(invalid) / sizeof(invalid[0]); index++) {
+            value.str = invalid[index];
+            CHECK(!config_validate_value(peer, &value, &scaled, error, sizeof(error)),
+                  "invalid peer MAC %s must be rejected", invalid[index]);
+        }
+    }
+
     /* vital_window: the loader accepts 32..256. */
     accept_num("vital_window", 32, NULL);
     accept_num("vital_window", 256, NULL);

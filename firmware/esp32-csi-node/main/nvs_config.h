@@ -20,6 +20,9 @@
 #define NVS_CFG_PASS_MAX     65
 #define NVS_CFG_IP_MAX       16
 
+#define RADIO_MODE_AP 0u
+#define RADIO_MODE_AP_PEER 1u
+
 /** Maximum channels in the hop list (must match CSI_HOP_CHANNELS_MAX).
  *  Derived from the shared limit so the loader and the configuration API can
  *  never disagree about how many channels the node may hop over. */
@@ -72,6 +75,10 @@ typedef struct {
      * in a bedroom -- hence runtime selectable rather than Kconfig-only. */
     uint8_t  led_mode;                   /**< 0=off, 1=steady colour, 2=40Hz flicker. */
     uint8_t  led_brightness;             /**< Percent, 0-100, scales the colormap. */
+    uint8_t  radio_mode;
+    uint8_t  peer_probe_hz;
+    uint8_t  peer_mac[6];
+    uint8_t  peer_mac_set;
 } nvs_config_t;
 
 #define LED_MODE_OFF     0

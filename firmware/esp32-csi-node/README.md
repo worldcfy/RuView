@@ -1,5 +1,8 @@
 # ESP32 CSI Node Firmware
 
+For configurable two-node direct CSI probing while retaining the AP and host
+uplink, see [Two-node sensing](../../docs/two-node-sensing.md).
+
 **Turn a $7 microcontroller into a privacy-first human sensing node.**
 
 This firmware captures WiFi Channel State Information (CSI) from an ESP32-S3 (production) or ESP32-C6 (research target — Wi-Fi 6 / 802.15.4 / TWT / LP-core hibernation, see [ADR-110](../../docs/adr/ADR-110-esp32-c6-firmware-extension.md)) and transforms it into real-time presence detection, vital sign monitoring, and programmable sensing -- all without cameras or wearables. Part of the [WiFi-DensePose](../../README.md) project.

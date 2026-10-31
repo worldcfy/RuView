@@ -367,6 +367,14 @@ void app_main(void)
      * on some devices, reverting node_id to the Kconfig default of 1. */
     csi_collector_set_node_id(g_nvs_config.node_id);
 
+    esp_err_t peer_config_ret = c6_sync_espnow_configure_peer(
+        g_nvs_config.radio_mode,
+        g_nvs_config.peer_mac_set ? g_nvs_config.peer_mac : NULL,
+        g_nvs_config.peer_probe_hz);
+    if (peer_config_ret != ESP_OK) {
+        ESP_LOGW(TAG, "Peer configuration rejected: %s", esp_err_to_name(peer_config_ret));
+    }
+
     const esp_app_desc_t *app_desc = esp_app_get_description();
 #if defined(CONFIG_IDF_TARGET_ESP32C5)
     const char *target_name = "ESP32-C5";
