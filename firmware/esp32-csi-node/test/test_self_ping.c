@@ -50,6 +50,7 @@ bool edge_enqueue_csi(const uint8_t *iq_data, uint16_t iq_len,
 uint64_t c6_sync_espnow_get_epoch_us(void) { return 0; }
 int64_t c6_sync_espnow_get_offset_us_smoothed(void) { return 0; }
 bool c6_sync_espnow_is_leader(void) { return false; }
+bool c6_sync_espnow_source_allowed(const uint8_t *mac) { (void)mac; return true; }
 int stream_sender_send_priority(const uint8_t *data, size_t len)
 {
     (void)data;

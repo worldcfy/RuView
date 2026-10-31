@@ -18,6 +18,7 @@ set(SRCS
     "c6_antenna_select.c"
     # ADR-110 D1 workaround — ESP-NOW cross-node sync (works on S3+C6)
     "c6_sync_espnow.c"
+    "mesh_frame.c"
     # ADR-110 B1/B2 unblock — soft-AP HE/TWT (C6-only when enabled)
     "c6_softap_he.c"
 )

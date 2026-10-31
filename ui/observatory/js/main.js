@@ -108,7 +108,7 @@ class Observatory {
     this._sensorVisuals = new Map();
     this._sensorGroup = new THREE.Group();
     this._scene.add(this._sensorGroup);
-    this._sensorBaseline = new THREE.Line(new THREE.BufferGeometry(),
+    this._sensorBaseline = new THREE.LineSegments(new THREE.BufferGeometry(),
       new THREE.LineBasicMaterial({ color: C.blueSignal, transparent: true, opacity: 0.6 }));
     this._scene.add(this._sensorBaseline);
     this._poseSystem = new PoseSystem();
@@ -559,7 +559,8 @@ class Observatory {
   _consumeLiveMessage(message) {
     if (!message || typeof message !== 'object') return;
     if (message.type === 'sensing_update') {
-      this._lastLiveFrameAt = Date.now();
+      this._lastLiveFrameAt = message.nodes?.length && !String(message.source || '').endsWith(':offline')
+        ? Date.now() : 0;
       this._liveData = { ...message };
       const cached = this._liveVitals;
       if (!message.vital_signs && cached && Date.now() - cached.receivedAt < 3000
@@ -597,7 +598,8 @@ class Observatory {
       id: node.node_id,
       status: telemetryFresh ? node.csi_status || node.status : 'stale',
       rssi: node.rssi_dbm,
-      fps: telemetry.mesh?.nodes?.[node.node_id]?.csi_fps_ema || 0,
+      fps: telemetryFresh && (node.csi_status || node.status) === 'active'
+        ? telemetry.mesh?.nodes?.[node.node_id]?.csi_fps_ema || 0 : 0,
       configured: node.position_configured === true,
       position: positions[node.node_id] || frame.nodes?.find(item => item.node_id === node.node_id)?.position,
     })).sort((left, right) => left.id - right.id);
@@ -614,6 +616,7 @@ class Observatory {
       ? this._liveEvents : null;
     return {
       live, frameFresh, nodes, qualifiedPersons, vitalSigns,
+      topology: this.settings.meshTopology === 'apless_usb' ? 'apless_usb' : 'ap_connected',
       vitalReason: vitalResponse?.abstention_reason || (vitalSigns ? 'Published experimental estimate' : 'No qualified vital estimate'),
       calibration: telemetry.calibration?.status || 'unavailable',
       phaseFusion: telemetry.status?.trust?.phase_fusion?.mode || 'unavailable',
@@ -679,9 +682,16 @@ class Observatory {
     this._diagnosticsRenderedAt = Date.now();
     const title = document.getElementById('diagnostics-title');
     if (!title) return;
-    title.textContent = diagnostics.live ? 'Live sensor diagnostics' : 'Demo data';
+    title.textContent = diagnostics.live
+      ? diagnostics.frameFresh && this._liveData ? 'Live sensor diagnostics' : 'Waiting for CSI input'
+      : 'Demo data';
+    if (diagnostics.live) {
+      document.getElementById('data-source-label').textContent = diagnostics.frameFresh && this._liveData ? 'LIVE' : 'NO CSI';
+    }
     document.getElementById('diagnostics-calibration').textContent = `Calibration: ${diagnostics.calibration}`;
     document.getElementById('diagnostics-fusion').textContent = `Fusion: ${diagnostics.phaseFusion}`;
+    document.getElementById('diagnostics-topology').textContent = diagnostics.topology === 'apless_usb'
+      ? 'Topology reference: AP-less / USB gateway' : 'Topology reference: AP connected';
     document.getElementById('diagnostics-pose').textContent = diagnostics.qualifiedPersons.length
       ? 'Pose: supplied estimate' : 'Pose: no qualified keypoints';
     document.getElementById('diagnostics-vitals').textContent = diagnostics.vitalReason;
@@ -704,6 +714,8 @@ class Observatory {
     });
     document.getElementById('diagnostics-nodes').replaceChildren(...rows);
     document.getElementById('scenario-area').style.display = diagnostics.live ? 'none' : 'flex';
+    document.getElementById('scenario-description').style.display = diagnostics.live ? 'none' : '';
+    document.getElementById('key-hints').style.bottom = `${document.getElementById('capabilities-bar').offsetHeight + 12}px`;
   }
 
   _updateSensorLinks(diagnostics) {
@@ -731,8 +743,25 @@ class Observatory {
       this._sensorVisuals.delete(nodeId);
     }
     this._sensorGroup.visible = diagnostics.live;
-    this._sensorBaseline.visible = diagnostics.live && positions.length === 2;
-    if (positions.length === 2) this._sensorBaseline.geometry.setFromPoints(positions);
+    this._routerGroup.visible = diagnostics.topology !== 'apless_usb';
+    for (const wave of this._wifiWaves) wave.mesh.visible = this._routerGroup.visible;
+    const edges = this._getConfiguredMeshEdges(diagnostics);
+    this._sensorBaseline.visible = diagnostics.live && edges.length > 0;
+    const points = edges.flatMap(edge => edge.map(node =>
+      new THREE.Vector3(node.position[0], node.position[2], node.position[1])));
+    this._sensorBaseline.geometry.setFromPoints(points);
+  }
+
+  _getConfiguredMeshEdges(diagnostics) {
+    const nodes = diagnostics.nodes.filter(node => node.configured
+      && node.position?.length === 3 && node.position.every(Number.isFinite)).slice(0, 6);
+    const edges = [];
+    for (let first = 0; first < nodes.length; first++) {
+      for (let second = first + 1; second < nodes.length; second++) {
+        edges.push([nodes[first], nodes[second]]);
+      }
+    }
+    return edges;
   }
 
   // ========================================

@@ -26,6 +26,7 @@ export const DEFAULTS = {
   field: 0.45, waves: 0.4, ambient: 0.7, reflect: 0.2,
   fov: 50, orbitSpeed: 0.15, grid: true, room: true,
   scenario: 'auto', cycle: 30, dataSource: 'demo', wsUrl: '',
+  meshTopology: 'ap_connected',
 };
 
 export const SETTINGS_VERSION = '6';
@@ -238,6 +239,12 @@ export class HudController {
     });
 
     // Data source
+    const topology = document.getElementById('opt-mesh-topology');
+    topology.value = s.meshTopology || 'ap_connected';
+    topology.addEventListener('change', event => {
+      s.meshTopology = event.target.value;
+      this.saveSettings();
+    });
     const dsSel = document.getElementById('opt-data-source');
     dsSel.value = s.dataSource;
     dsSel.addEventListener('change', (e) => {

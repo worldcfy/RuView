@@ -58,6 +58,8 @@ static esp_timer_handle_t s_wasm_timer;
 /* Runtime configuration (loaded from NVS or Kconfig defaults).
  * Global so other modules (wasm_upload.c) can access pubkey, etc. */
 nvs_config_t g_nvs_config;
+static uint8_t s_boot_radio_mode = RADIO_MODE_AP;
+static uint8_t s_boot_mesh_channel = 6;
 
 /* Event group bits */
 #define WIFI_CONNECTED_BIT BIT0
@@ -201,6 +203,15 @@ static void wifi_init_sta(void)
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    if (s_boot_radio_mode == RADIO_MODE_APLESS) {
+        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+        ESP_ERROR_CHECK(esp_wifi_start());
+        ESP_ERROR_CHECK(esp_wifi_set_channel(s_boot_mesh_channel, WIFI_SECOND_CHAN_NONE));
+        ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+        ESP_LOGI(TAG, "AP-less mesh radio active on channel %u", s_boot_mesh_channel);
+        return;
+    }
 
     esp_event_handler_instance_t instance_any_id;
     esp_event_handler_instance_t instance_got_ip;
@@ -361,16 +372,19 @@ void app_main(void)
     config_trial_boot_check();
 
     nvs_config_load(&g_nvs_config);
+    s_boot_radio_mode = g_nvs_config.radio_mode;
+    s_boot_mesh_channel = g_nvs_config.mesh_channel;
 
     /* Capture node_id IMMEDIATELY — before wifi_init_sta() can corrupt
      * g_nvs_config. See #232/#375/#390: WiFi driver init clobbers the struct
      * on some devices, reverting node_id to the Kconfig default of 1. */
     csi_collector_set_node_id(g_nvs_config.node_id);
 
-    esp_err_t peer_config_ret = c6_sync_espnow_configure_peer(
+    esp_err_t peer_config_ret = c6_sync_espnow_configure_mesh(
         g_nvs_config.radio_mode,
-        g_nvs_config.peer_mac_set ? g_nvs_config.peer_mac : NULL,
-        g_nvs_config.peer_probe_hz);
+        g_nvs_config.peer_macs, g_nvs_config.peer_count,
+        g_nvs_config.peer_probe_hz,
+        g_nvs_config.mesh_gateway_set ? g_nvs_config.mesh_gateway_mac : NULL);
     if (peer_config_ret != ESP_OK) {
         ESP_LOGW(TAG, "Peer configuration rejected: %s", esp_err_to_name(peer_config_ret));
     }

@@ -60,6 +60,7 @@ extern const size_t   CONFIG_KEY_COUNT;
 const cfg_key_t *config_find_key(const char *json);
 
 bool config_parse_peer_mac(const char *text, uint8_t mac[6]);
+bool config_parse_peer_macs(const char *text, uint8_t peers[CFG_LIMIT_MESH_PEERS_MAX][6], uint8_t *count);
 
 /**
  * Accept or reject one value.

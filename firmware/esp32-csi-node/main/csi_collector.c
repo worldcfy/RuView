@@ -287,6 +287,7 @@ static void wifi_csi_callback(void *ctx, wifi_csi_info_t *info)
 {
     (void)ctx;
     if (info == NULL) return;
+    if (!c6_sync_espnow_source_allowed(info->mac)) return;
     if (s_filter_mac_set && memcmp(info->mac, s_filter_mac, 6) != 0) return;
 
     /* Early rate gate: drop excess callbacks to ~50 Hz to prevent

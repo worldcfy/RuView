@@ -115,6 +115,8 @@
         <span id="diagnostics-calibration">Calibration: unavailable</span>
         <span id="diagnostics-fusion">Fusion: unavailable</span>
         <span id="diagnostics-pose">Pose: unavailable</span>
+        <span>Configured mesh geometry</span>
+        <span id="diagnostics-topology">Topology reference: AP connected</span>
       </div>
       <table class="diagnostics-table">
         <thead><tr><th>Node / state</th><th>RSSI</th><th>CSI Hz</th><th>Configured position (m)</th></tr></thead>
@@ -321,6 +323,13 @@
           <select id="opt-data-source">
             <option value="demo" selected>Demo Generator</option>
             <option value="ws">Live WebSocket</option>
+          </select>
+        </label>
+        <label class="setting-row">
+          <span>Topology Reference</span>
+          <select id="opt-mesh-topology">
+            <option value="ap_connected">AP-connected peers</option>
+            <option value="apless_usb">AP-less peers / USB gateway</option>
           </select>
         </label>
         <label class="setting-row" id="ws-url-row" style="display:none">

@@ -327,3 +327,4 @@ scripts/fal-visual-teacher/output/
 
 # Trained adaptive classifier (auto-created at runtime; #2135)
 /v2/data/adaptive_model.json
+/firmware/esp32-csi-node/test/test_mesh_frame

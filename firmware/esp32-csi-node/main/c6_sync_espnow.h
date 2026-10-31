@@ -27,6 +27,7 @@ extern "C" {
 
 #include "esp_err.h"
 #include <stdint.h>
+#include <stddef.h>
 #include <stdbool.h>
 
 /**
@@ -39,6 +40,11 @@ esp_err_t c6_sync_espnow_init(void);
 
 /** Capture validated peer settings before WiFi initialization. */
 esp_err_t c6_sync_espnow_configure_peer(uint8_t mode, const uint8_t *peer_mac, uint8_t probe_hz);
+esp_err_t c6_sync_espnow_configure_mesh(uint8_t mode, const uint8_t peers[][6],
+									  uint8_t count, uint8_t probe_hz, const uint8_t *gateway);
+bool c6_sync_espnow_source_allowed(const uint8_t *mac);
+bool c6_sync_espnow_is_apless(void);
+int c6_sync_espnow_relay_telemetry(const uint8_t *data, size_t len);
 
 /**
  * Returns the synced wall-clock estimate in microseconds.

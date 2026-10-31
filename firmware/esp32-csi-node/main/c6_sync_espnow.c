@@ -25,6 +25,10 @@
 #include "esp_idf_version.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/timers.h"
+#include "freertos/queue.h"
+#include "freertos/task.h"
+#include "driver/usb_serial_jtag.h"
+#include "mesh_frame.h"
 #include <string.h>
 
 static const char *TAG = "c6_espnow";
@@ -47,6 +51,74 @@ static uint8_t s_destination_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 static bool s_directed_peer = false;
 static uint32_t s_probe_period_ms = BEACON_PERIOD_MS;
 static bool s_peer_configuration_valid = true;
+static uint8_t s_radio_mode = RADIO_MODE_AP;
+static uint8_t s_peer_count = 0;
+static uint8_t s_peers[CFG_LIMIT_MESH_PEERS_MAX][6];
+static uint8_t s_gateway_mac[6];
+static bool s_gateway_local = false;
+static mesh_frame_state_t s_reassembly[CFG_LIMIT_MESH_PEERS_MAX];
+typedef struct {
+    uint16_t length;
+    uint8_t data[MESH_FRAME_MAX];
+} mesh_telemetry_t;
+static QueueHandle_t s_relay_queue = NULL;
+static QueueHandle_t s_relay_free = NULL;
+static mesh_telemetry_t s_relay_pool[8];
+
+bool c6_sync_espnow_is_apless(void) { return s_radio_mode == RADIO_MODE_APLESS; }
+
+bool c6_sync_espnow_source_allowed(const uint8_t *mac)
+{
+    if (mac == NULL) return false;
+    if (!s_directed_peer) return true;
+    for (uint8_t index = 0; index < s_peer_count; index++) {
+        if (memcmp(mac, s_peers[index], 6) == 0) return true;
+    }
+    return false;
+}
+
+int c6_sync_espnow_relay_telemetry(const uint8_t *data, size_t len)
+{
+    if (s_relay_queue == NULL || data == NULL || len < 4 || len > MESH_FRAME_MAX) return -1;
+    mesh_telemetry_t *frame = NULL;
+    if (xQueueReceive(s_relay_free, &frame, 0) != pdTRUE) return -1;
+    frame->length = (uint16_t)len;
+    memcpy(frame->data, data, len);
+    if (xQueueSend(s_relay_queue, &frame, 0) == pdTRUE) return (int)len;
+    xQueueSend(s_relay_free, &frame, 0);
+    return -1;
+}
+
+static void relay_worker(void *context)
+{
+    (void)context;
+    mesh_telemetry_t *frame;
+    uint32_t sequence = 0;
+    static char line[MESH_FRAME_MAX * 2 + 16];
+    const char digits[] = "0123456789abcdef";
+    for (;;) {
+        if (xQueueReceive(s_relay_queue, &frame, portMAX_DELAY) != pdTRUE) continue;
+        if (s_gateway_local) {
+            memcpy(line, "RUVIEW_MESH ", 12);
+            for (size_t index = 0; index < frame->length; index++) {
+                line[12 + index * 2] = digits[frame->data[index] >> 4];
+                line[13 + index * 2] = digits[frame->data[index] & 15];
+            }
+            line[12 + frame->length * 2] = '\n';
+            usb_serial_jtag_write_bytes(line, 13 + frame->length * 2, pdMS_TO_TICKS(100));
+        } else {
+            uint8_t packet[MESH_RADIO_MTU];
+            size_t offset = 0;
+            sequence++;
+            while (offset < frame->length) {
+                size_t length = mesh_frame_encode(frame->data, frame->length, sequence, offset, packet, sizeof(packet));
+                if (length == 0 || esp_now_send(s_gateway_mac, packet, length) != ESP_OK) break;
+                offset += length - MESH_FRAGMENT_HEADER_SIZE;
+            }
+        }
+        xQueueSend(s_relay_free, &frame, 0);
+    }
+}
 
 static uint64_t s_local_id     = 0;   /* 6-byte MAC packed into u64 */
 static uint64_t s_leader_id    = 0;
@@ -91,9 +163,13 @@ static void send_beacon(void)
         ._reserved       = 0,
         .leader_epoch_us = (uint64_t)esp_timer_get_time(),
     };
-    esp_err_t r = esp_now_send(s_destination_mac, (uint8_t *)&b, sizeof(b));
-    s_tx_count++;
-    if (r != ESP_OK) s_tx_fail++;
+    uint8_t destinations = s_directed_peer ? s_peer_count : 1;
+    for (uint8_t index = 0; index < destinations; index++) {
+        const uint8_t *destination = s_directed_peer ? s_peers[index] : s_broadcast_mac;
+        esp_err_t result = esp_now_send(destination, (uint8_t *)&b, sizeof(b));
+        s_tx_count++;
+        if (result != ESP_OK) s_tx_fail++;
+    }
     /* Diag log every 50 beacons. */
     if ((s_tx_count % 50) == 1) {
         ESP_LOGI(TAG, "tx#%lu (fail=%lu) rx#%lu (match=%lu) leader=%d offset_us=%lld smoothed=%lld",
@@ -116,8 +192,16 @@ static void on_recv(const uint8_t *src_mac, const uint8_t *data, int len)
 {
 #endif
     s_rx_count++;
-    if (s_directed_peer && (src_mac == NULL
-        || memcmp(src_mac, s_destination_mac, 6) != 0)) return;
+    if (!c6_sync_espnow_source_allowed(src_mac)) return;
+    if (s_radio_mode == RADIO_MODE_APLESS && s_gateway_local && data != NULL && len > 0) {
+        for (uint8_t index = 0; index < s_peer_count; index++) {
+            if (memcmp(src_mac, s_peers[index], 6) == 0
+                && mesh_frame_feed(&s_reassembly[index], data, (size_t)len) == 1) {
+                c6_sync_espnow_relay_telemetry(s_reassembly[index].data, s_reassembly[index].total);
+                return;
+            }
+        }
+    }
     if (data == NULL || len < (int)sizeof(espnow_beacon_t)) return;
     const espnow_beacon_t *b = (const espnow_beacon_t *)data;
     if (b->magic != BEACON_MAGIC || b->proto_ver != BEACON_PROTO_VER) return;
@@ -197,20 +281,39 @@ static void beacon_timer_cb(TimerHandle_t t)
 
 esp_err_t c6_sync_espnow_configure_peer(uint8_t mode, const uint8_t *peer_mac, uint8_t probe_hz)
 {
+    uint8_t peers[1][6];
+    if (peer_mac != NULL) memcpy(peers[0], peer_mac, 6);
+    return c6_sync_espnow_configure_mesh(mode, peers, peer_mac != NULL ? 1 : 0, probe_hz, NULL);
+}
+
+esp_err_t c6_sync_espnow_configure_mesh(uint8_t mode, const uint8_t peers[][6],
+                                      uint8_t count, uint8_t probe_hz, const uint8_t *gateway)
+{
     if (s_beacon_timer != NULL) return ESP_ERR_INVALID_STATE;
     s_peer_configuration_valid = false;
+    if (count > CFG_LIMIT_MESH_PEERS_MAX || (count != 0 && peers == NULL)) return ESP_ERR_INVALID_ARG;
+    if (mode > RADIO_MODE_APLESS || probe_hz < CFG_LIMIT_PEER_PROBE_HZ_MIN
+        || probe_hz > CFG_LIMIT_PEER_PROBE_HZ_MAX) return ESP_ERR_INVALID_ARG;
+    if (mode == RADIO_MODE_APLESS && (count == 0 || gateway == NULL
+        || (gateway[0] & 1u) || mac6_to_u64(gateway) == 0)) return ESP_ERR_INVALID_ARG;
+    for (uint8_t index = 0; index < count; index++) {
+        if ((peers[index][0] & 1u) || mac6_to_u64(peers[index]) == 0) return ESP_ERR_INVALID_ARG;
+        for (uint8_t previous = 0; previous < index; previous++) {
+            if (memcmp(peers[index], peers[previous], 6) == 0) return ESP_ERR_INVALID_ARG;
+        }
+    }
+    s_radio_mode = mode;
+    s_peer_count = count;
+    if (count != 0) memcpy(s_peers, peers, count * 6u);
+    if (gateway != NULL) memcpy(s_gateway_mac, gateway, 6);
     if (mode == RADIO_MODE_AP) {
         s_directed_peer = false;
         memcpy(s_destination_mac, s_broadcast_mac, 6);
         s_probe_period_ms = BEACON_PERIOD_MS;
-    } else if (mode == RADIO_MODE_AP_PEER && peer_mac != NULL
-        && (peer_mac[0] & 1u) == 0 && mac6_to_u64(peer_mac) != 0
-        && probe_hz >= CFG_LIMIT_PEER_PROBE_HZ_MIN && probe_hz <= CFG_LIMIT_PEER_PROBE_HZ_MAX) {
-        s_directed_peer = true;
-        memcpy(s_destination_mac, peer_mac, 6);
-        s_probe_period_ms = 1000u / probe_hz;
     } else {
-        return ESP_ERR_INVALID_ARG;
+        s_directed_peer = count > 0;
+        if (count > 0) memcpy(s_destination_mac, peers[0], 6);
+        s_probe_period_ms = 1000u / probe_hz;
     }
     s_peer_configuration_valid = true;
     return ESP_OK;
@@ -222,11 +325,16 @@ esp_err_t c6_sync_espnow_init(void)
     esp_err_t mac_result = esp_read_mac(mac, ESP_MAC_WIFI_STA);
     if (mac_result != ESP_OK) return mac_result;
     s_local_id = mac6_to_u64(mac);
-    if (!s_peer_configuration_valid
-        || (s_directed_peer && memcmp(mac, s_destination_mac, 6) == 0)) {
+    if (!s_peer_configuration_valid) {
         ESP_LOGE(TAG, "Directed sensing needs a distinct unicast peer and a 1..50 Hz probe rate");
         return ESP_ERR_INVALID_ARG;
     }
+    for (uint8_t index = 0; index < s_peer_count; index++) {
+        if (memcmp(mac, s_peers[index], 6) == 0) return ESP_ERR_INVALID_ARG;
+    }
+    s_gateway_local = s_radio_mode == RADIO_MODE_APLESS && memcmp(mac, s_gateway_mac, 6) == 0;
+    if (s_radio_mode == RADIO_MODE_APLESS && !s_gateway_local
+        && !c6_sync_espnow_source_allowed(s_gateway_mac)) return ESP_ERR_INVALID_ARG;
     esp_err_t r = esp_now_init();
     if (r != ESP_OK) {
         ESP_LOGE(TAG, "esp_now_init failed: %s", esp_err_to_name(r));
@@ -238,8 +346,10 @@ esp_err_t c6_sync_espnow_init(void)
     if (r != ESP_OK) return r;
 
     /* Add broadcast peer so esp_now_send to FF:FF:FF:FF:FF:FF works. */
+    uint8_t destinations = s_directed_peer ? s_peer_count : 1;
+    for (uint8_t index = 0; index < destinations; index++) {
     esp_now_peer_info_t peer = {0};
-    memcpy(peer.peer_addr, s_destination_mac, 6);
+    memcpy(peer.peer_addr, s_directed_peer ? s_peers[index] : s_broadcast_mac, 6);
     peer.channel = 0;        /* current STA channel */
     peer.ifidx   = WIFI_IF_STA;
     peer.encrypt = false;
@@ -255,11 +365,27 @@ esp_err_t c6_sync_espnow_init(void)
             .ersu = false,
             .dcm = false,
         };
-        r = esp_now_set_peer_rate_config(s_destination_mac, &rate_config);
+        r = esp_now_set_peer_rate_config(peer.peer_addr, &rate_config);
         if (r != ESP_OK) {
             ESP_LOGE(TAG, "Peer CSI probe rate configuration failed: %s", esp_err_to_name(r));
             return r;
         }
+    }
+    }
+    if (s_radio_mode == RADIO_MODE_APLESS) {
+        s_relay_queue = xQueueCreate(8, sizeof(mesh_telemetry_t *));
+        s_relay_free = xQueueCreate(8, sizeof(mesh_telemetry_t *));
+        if (s_relay_queue == NULL || s_relay_free == NULL) return ESP_ERR_NO_MEM;
+        for (size_t index = 0; index < 8; index++) {
+            mesh_telemetry_t *frame = &s_relay_pool[index];
+            if (xQueueSend(s_relay_free, &frame, 0) != pdTRUE) return ESP_ERR_NO_MEM;
+        }
+        if (!usb_serial_jtag_is_driver_installed() && s_gateway_local) {
+            usb_serial_jtag_driver_config_t usb_config = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
+            r = usb_serial_jtag_driver_install(&usb_config);
+            if (r != ESP_OK) return r;
+        }
+        if (xTaskCreate(relay_worker, "mesh_relay", 6144, NULL, 4, NULL) != pdPASS) return ESP_ERR_NO_MEM;
     }
 
     /* Start as candidate leader — will step down on receiving lower-id beacon. */

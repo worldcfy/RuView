@@ -29,8 +29,11 @@ const cfg_key_t CONFIG_KEYS[] = {
     { "tdm_slot_index",     "tdm_slot",     T_U8,    0,    63,     0,   0,   false },
     { "tdm_node_count",     "tdm_nodes",    T_U8,    1,    64,     0,   0,   false },
     { "beacon_period_ms",   "beacon_ms",    T_U16,   0, 10000,     0,   0,   false },
-    { "radio_mode",         "radio_mode",   T_U8,    0,     1,     0,   0,   false },
+    { "radio_mode",         "radio_mode",   T_U8,    0,     2,     0,   0,   false },
     { "peer_mac",           "peer_mac",     T_STR,   0,     0,    18,   0,   false },
+    { "peer_macs",          "peer_macs",    T_STR,   0,     0,    CFG_LIMIT_MESH_MAC_LIST_LEN, 0, false },
+    { "mesh_gateway_mac",   "mesh_gateway", T_STR,   0,     0,    18,   0,   false },
+    { "mesh_channel",       "mesh_channel", T_U8,    1,    11,     0,   0,   false },
     { "peer_probe_hz",      "peer_hz",      T_U8,    CFG_LIMIT_PEER_PROBE_HZ_MIN,
                                                         CFG_LIMIT_PEER_PROBE_HZ_MAX,
                                                         0,   0,   false },
@@ -84,6 +87,36 @@ bool config_parse_peer_mac(const char *text, uint8_t mac[6])
     return combined != 0 && (mac[0] & 1u) == 0;
 }
 
+bool config_parse_peer_macs(const char *text, uint8_t peers[CFG_LIMIT_MESH_PEERS_MAX][6], uint8_t *count)
+{
+    if (text == NULL || peers == NULL || count == NULL) return false;
+    *count = 0;
+    size_t length = strlen(text);
+    if (length == 0) return true;
+    if (length >= CFG_LIMIT_MESH_MAC_LIST_LEN) return false;
+    uint8_t parsed[CFG_LIMIT_MESH_PEERS_MAX][6];
+    uint8_t parsed_count = 0;
+    const char *cursor = text;
+    while (*cursor != '\0') {
+        if (parsed_count >= CFG_LIMIT_MESH_PEERS_MAX || strlen(cursor) < 17) return false;
+        char address[18];
+        memcpy(address, cursor, 17);
+        address[17] = '\0';
+        if (!config_parse_peer_mac(address, parsed[parsed_count])) return false;
+        for (uint8_t index = 0; index < parsed_count; index++) {
+            if (memcmp(parsed[index], parsed[parsed_count], 6) == 0) return false;
+        }
+        parsed_count++;
+        cursor += 17;
+        if (*cursor == '\0') break;
+        if (*cursor != ',' || cursor[1] == '\0') return false;
+        cursor++;
+    }
+    memcpy(peers, parsed, parsed_count * 6u);
+    *count = parsed_count;
+    return true;
+}
+
 bool config_validate_value(const cfg_key_t *k, const cfg_value_t *v,
                             uint32_t *scaled, char *err, size_t errlen)
 {
@@ -97,10 +130,19 @@ bool config_validate_value(const cfg_key_t *k, const cfg_value_t *v,
                      (unsigned)(k->maxlen - 1));
             return false;
         }
-        if (strcmp(k->json, "peer_mac") == 0 && v->str[0] != '\0') {
+        if ((strcmp(k->json, "peer_mac") == 0 || strcmp(k->json, "mesh_gateway_mac") == 0)
+            && v->str[0] != '\0') {
             uint8_t mac[6];
             if (!config_parse_peer_mac(v->str, mac)) {
                 snprintf(err, errlen, "peer_mac must be a nonzero unicast MAC address");
+                return false;
+            }
+        }
+        if (strcmp(k->json, "peer_macs") == 0) {
+            uint8_t peers[CFG_LIMIT_MESH_PEERS_MAX][6];
+            uint8_t count;
+            if (!config_parse_peer_macs(v->str, peers, &count)) {
+                snprintf(err, errlen, "peer_macs needs 0..5 distinct unicast MACs separated by commas");
                 return false;
             }
         }

@@ -217,3 +217,32 @@ test('waiting live views do not borrow demo measurements', () => {
   assert.equal(frame.estimated_persons, undefined);
   assert.equal(frame.persons.length, 0);
 });
+
+test('configured mesh geometry supports every size from one to six nodes', () => {
+  const harness = createHarness();
+  assert.equal(typeof harness.observatory._getConfiguredMeshEdges, 'function');
+  for (let count = 1; count <= 6; count++) {
+    const nodes = Array.from({ length: count }, (_, index) => ({
+      id: index + 1, configured: true, position: [index, 0, 1.2],
+    }));
+    const edges = harness.observatory._getConfiguredMeshEdges({ nodes });
+    assert.equal(edges.length, count * (count - 1) / 2);
+    assert.ok(edges.every(edge => edge.length === 2 && edge[0].id !== edge[1].id));
+  }
+});
+
+test('offline sensing status does not count as fresh mesh CSI', () => {
+  const harness = createHarness();
+  harness.observatory.settings.dataSource = 'ws';
+  harness.observatory._consumeLiveMessage({ type: 'sensing_update', source: 'esp32:offline', nodes: [] });
+  assert.equal(harness.observatory._getLiveDiagnostics().frameFresh, false);
+});
+
+test('stale mesh nodes do not report their historical rate as current CSI', () => {
+  const harness = createHarness();
+  harness.observatory._telemetry = {
+    nodes: { nodes: [{ node_id: 1, csi_status: 'stale', status: 'stale' }] },
+    mesh: { nodes: { 1: { csi_fps_ema: 20 } } },
+  };
+  assert.equal(harness.observatory._getLiveDiagnostics().nodes[0].fps, 0);
+});

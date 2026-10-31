@@ -38,6 +38,11 @@ void nvs_config_load(nvs_config_t *cfg)
     cfg->peer_probe_hz = 10;
     cfg->peer_mac_set = 0;
     memset(cfg->peer_mac, 0, sizeof(cfg->peer_mac));
+    cfg->peer_count = 0;
+    memset(cfg->peer_macs, 0, sizeof(cfg->peer_macs));
+    memset(cfg->mesh_gateway_mac, 0, sizeof(cfg->mesh_gateway_mac));
+    cfg->mesh_gateway_set = 0;
+    cfg->mesh_channel = 6;
 
     /* Start with Kconfig compiled defaults */
     strlcpy(cfg->wifi_ssid, CONFIG_CSI_WIFI_SSID, sizeof(cfg->wifi_ssid));
@@ -158,7 +163,7 @@ void nvs_config_load(nvs_config_t *cfg)
 
     uint8_t radio_mode;
     if (nvs_get_u8(handle, "radio_mode", &radio_mode) == ESP_OK
-        && radio_mode <= RADIO_MODE_AP_PEER) {
+        && radio_mode <= RADIO_MODE_APLESS) {
         cfg->radio_mode = radio_mode;
     }
     uint8_t probe_hz;
@@ -171,6 +176,20 @@ void nvs_config_load(nvs_config_t *cfg)
         && config_parse_peer_mac(buf, cfg->peer_mac)) {
         cfg->peer_mac_set = 1;
     }
+    char peer_list[CFG_LIMIT_MESH_MAC_LIST_LEN];
+    len = sizeof(peer_list);
+    if (nvs_get_str(handle, "peer_macs", peer_list, &len) == ESP_OK) {
+        if (!config_parse_peer_macs(peer_list, cfg->peer_macs, &cfg->peer_count)) cfg->peer_count = 0;
+    } else if (cfg->peer_mac_set) {
+        memcpy(cfg->peer_macs[0], cfg->peer_mac, 6);
+        cfg->peer_count = 1;
+    }
+    len = sizeof(buf);
+    if (nvs_get_str(handle, "mesh_gateway", buf, &len) == ESP_OK
+        && config_parse_peer_mac(buf, cfg->mesh_gateway_mac)) cfg->mesh_gateway_set = 1;
+    uint8_t mesh_channel;
+    if (nvs_get_u8(handle, "mesh_channel", &mesh_channel) == ESP_OK
+        && mesh_channel >= 1 && mesh_channel <= 11) cfg->mesh_channel = mesh_channel;
 
     /* ADR-029: Channel hop count */
     uint8_t hop_count_val;
@@ -369,11 +388,11 @@ void nvs_config_load(nvs_config_t *cfg)
         cfg->tdm_slot_index = 0;
     }
 
-    if (cfg->radio_mode == RADIO_MODE_AP_PEER && cfg->peer_mac_set) {
-        memcpy(cfg->filter_mac, cfg->peer_mac, sizeof(cfg->filter_mac));
-        cfg->filter_mac_set = 1;
+    if (cfg->radio_mode != RADIO_MODE_AP && cfg->peer_count > 0) {
+        cfg->filter_mac_set = cfg->peer_count == 1;
+        if (cfg->peer_count == 1) memcpy(cfg->filter_mac, cfg->peer_macs[0], 6);
         cfg->channel_hop_count = 1;
-        cfg->csi_channel = 0;
+        cfg->csi_channel = cfg->radio_mode == RADIO_MODE_APLESS ? cfg->mesh_channel : 0;
     }
     nvs_close(handle);
 }

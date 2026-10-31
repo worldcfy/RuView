@@ -166,6 +166,12 @@ test_config_rules: test_config_rules.c $(MAIN_DIR)/config_rules.c $(MAIN_DIR)/co
 run_config_rules: test_config_rules
 	./test_config_rules
 
+test_mesh_frame: test_mesh_frame.c $(MAIN_DIR)/mesh_frame.c $(MAIN_DIR)/mesh_frame.h
+	cc -std=c99 -Wall -Wextra -Werror -I$(MAIN_DIR) -o $@ test_mesh_frame.c $(MAIN_DIR)/mesh_frame.c
+
+run_mesh_frame: test_mesh_frame
+	./test_mesh_frame
+
 # --- Configuration API write-through rollback and boot recovery ---
 # Compiles the production handler against deterministic, write-through NVS
 # stubs and injects each failure between partial writes and restoration.

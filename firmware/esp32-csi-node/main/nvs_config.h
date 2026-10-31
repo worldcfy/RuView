@@ -22,6 +22,7 @@
 
 #define RADIO_MODE_AP 0u
 #define RADIO_MODE_AP_PEER 1u
+#define RADIO_MODE_APLESS 2u
 
 /** Maximum channels in the hop list (must match CSI_HOP_CHANNELS_MAX).
  *  Derived from the shared limit so the loader and the configuration API can
@@ -79,6 +80,11 @@ typedef struct {
     uint8_t  peer_probe_hz;
     uint8_t  peer_mac[6];
     uint8_t  peer_mac_set;
+    uint8_t  peer_count;
+    uint8_t  peer_macs[CFG_LIMIT_MESH_PEERS_MAX][6];
+    uint8_t  mesh_gateway_mac[6];
+    uint8_t  mesh_gateway_set;
+    uint8_t  mesh_channel;
 } nvs_config_t;
 
 #define LED_MODE_OFF     0

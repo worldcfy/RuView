@@ -31,6 +31,8 @@ Integrated as one set: conflicts resolved, review findings fixed, validated on t
 
 ### Added
 
+- **ESP32 mesh topology extension.** Support configured peer lists for 1-6 AP-connected nodes and a fixed-channel 2-6-node AP-less mode with an explicit USB gateway, bounded telemetry fragmentation, and a no-reset localhost bridge. Add reciprocal topology-plan generation and 1-6-node observatory geometry. Build and simulated tests do not establish physical AP-less or six-node throughput, sensing accuracy, or authenticated RF measurements.
+
 - **Configurable two-node peer sensing and observatory diagnostics.** Add bounded, validated directed ESP-NOW probes on the existing AP channel, preserve AP CSI as the default, and show live per-node geometry, rates, freshness, calibration, and inference availability. Firmware compilation and host tests are not physical-radio qualification. See `docs/two-node-sensing.md` for explicit deployment limits.
 
 - **`@ruvnet/ruview` 0.9.1: live sensing views inside Claude Code (ADR-377, ADR-378).** The package now ships `ruview-live`, a Claude Code mod. Type `/ruview` and a pane opens next to the conversation showing what your sensors see right now, refreshed automatically. It has three views, switched with keys `1` `2` `3` or with `/ruview overview|waterfall|radar`:

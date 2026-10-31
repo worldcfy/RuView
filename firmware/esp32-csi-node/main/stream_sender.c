@@ -6,6 +6,7 @@
  */
 
 #include "stream_sender.h"
+#include "c6_sync_espnow.h"
 
 #include <string.h>
 #include "esp_log.h"
@@ -78,6 +79,11 @@ int stream_sender_init_with(const char *ip, uint16_t port)
 
 int stream_sender_send(const uint8_t *data, size_t len)
 {
+    if (c6_sync_espnow_is_apless()) {
+        int sent = c6_sync_espnow_relay_telemetry(data, len);
+        if (sent > 0) s_last_success_us = esp_timer_get_time();
+        return sent;
+    }
     if (s_sock < 0) {
         return -1;
     }
@@ -130,6 +136,11 @@ int stream_sender_send(const uint8_t *data, size_t len)
 
 int stream_sender_send_priority(const uint8_t *data, size_t len)
 {
+    if (c6_sync_espnow_is_apless()) {
+        int sent = c6_sync_espnow_relay_telemetry(data, len);
+        if (sent > 0) s_last_success_us = esp_timer_get_time();
+        return sent;
+    }
     if (s_sock < 0) {
         return -1;
     }

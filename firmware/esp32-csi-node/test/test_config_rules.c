@@ -135,7 +135,12 @@ static void test_range_boundaries(void)
 {
     accept_num("radio_mode", 0, NULL);
     accept_num("radio_mode", 1, NULL);
-    reject_num("radio_mode", 2);
+    accept_num("radio_mode", 2, NULL);
+    reject_num("radio_mode", 3);
+    accept_num("mesh_channel", 1, NULL);
+    accept_num("mesh_channel", 11, NULL);
+    reject_num("mesh_channel", 0);
+    reject_num("mesh_channel", 12);
     accept_num("peer_probe_hz", 1, NULL);
     accept_num("peer_probe_hz", 50, NULL);
     reject_num("peer_probe_hz", 0);
@@ -156,6 +161,23 @@ static void test_range_boundaries(void)
             CHECK(!config_validate_value(peer, &value, &scaled, error, sizeof(error)),
                   "invalid peer MAC %s must be rejected", invalid[index]);
         }
+    }
+
+    const cfg_key_t *mesh = config_find_key("peer_macs");
+    CHECK(mesh != NULL, "peer_macs must support a six-node mesh");
+    if (mesh != NULL) {
+        char error[96] = {0};
+        uint32_t scaled = 0;
+        cfg_value_t value = { .kind = CFG_VAL_STR,
+            .str = "02:00:00:00:00:01,02:00:00:00:00:02,02:00:00:00:00:03,02:00:00:00:00:04,02:00:00:00:00:05" };
+        CHECK(config_validate_value(mesh, &value, &scaled, error, sizeof(error)),
+              "five distinct peers must be accepted");
+        value.str = "02:00:00:00:00:01,02:00:00:00:00:01";
+        CHECK(!config_validate_value(mesh, &value, &scaled, error, sizeof(error)),
+              "duplicate mesh peers must be rejected");
+        value.str = "02:00:00:00:00:01,";
+        CHECK(!config_validate_value(mesh, &value, &scaled, error, sizeof(error)),
+              "empty trailing mesh peer must be rejected");
     }
 
     /* vital_window: the loader accepts 32..256. */
